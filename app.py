@@ -88,10 +88,11 @@ def tradingview_webhook():
         f"Price: {price}",
     ]
 
-    # Only show TP/SL if provided
-    if tp and sl:
-        lines.append(f"TP: {tp}")
-        lines.append(f"SL: {sl}")
+  if tp and sl:
+    lines.append(f"TP: {tp}")
+    lines.append(f"SL: {sl}")
+    lines.append("")
+    lines.append("⚠️ Please trade carefully when scalping ⚠️")
 
     msg = "\n".join(lines)
 
