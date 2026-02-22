@@ -86,7 +86,7 @@ def tradingview_webhook():
         lines.append(f"TP: {tp}")
         lines.append(f"SL: {sl}")
         lines.append("")
-        lines.append("⚠️ Please trade carefully when scalping ⚠️")
+        lines.append("⚠️ Please trade carefully scalping ⚠️")
 
     msg = "\n".join(lines)
 
