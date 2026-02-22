@@ -56,7 +56,19 @@ def tradingview_webhook():
     tf = data.get("tf", "")
     price = data.get("price", "")
 
-    message = f"{event}\n{ticker} ({tf}) @ {price}"
+    emoji = {
+    "BUY NOW": "🟢",
+    "SELL NOW": "🔴",
+    "TREND_UP": "📈",
+    "TREND_DOWN": "📉",
+    "TEST_1M": "🧪",
+}.get(event, "🔔")
+
+msg = (
+    f"{emoji} {event}\n"
+    f"{ticker} • {tf}\n"
+    f"Price: {price}"
+)
 
     send_to_group(message)
 
