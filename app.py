@@ -5,7 +5,7 @@ from flask import Flask, request, abort
 
 app = Flask(__name__)
 
-# Render env vars
+# Render environment variables
 BOT_TOKEN = os.getenv("BOT_TOKEN", "")
 GROUP_ID = os.getenv("GROUP_ID", "")
 TV_SECRET = os.getenv("TV_SECRET", "")
@@ -15,8 +15,7 @@ TELEGRAM_API = f"https://api.telegram.org/bot{BOT_TOKEN}"
 
 def send_to_group(text: str) -> None:
     if not BOT_TOKEN or not GROUP_ID:
-        # Don’t crash deployment; log useful info
-        print("Missing BOT_TOKEN or GROUP_ID env var")
+        print("ERROR: Missing BOT_TOKEN or GROUP_ID environment variable")
         return
 
     r = requests.post(
@@ -25,7 +24,7 @@ def send_to_group(text: str) -> None:
         timeout=20,
     )
 
-    # Log Telegram response for debugging
+    # Helpful debug output in Render logs
     print("TELEGRAM STATUS:", r.status_code)
     print("TELEGRAM BODY:", r.text)
 
@@ -54,30 +53,47 @@ def tradingview_webhook():
             print("SECRET MISMATCH. Incoming:", incoming, "Expected:", TV_SECRET)
             abort(401)
 
+    # Fields from Pine payload
     event = data.get("event", "ALERT")
     ticker = data.get("ticker", "")
     tf = data.get("tf", "")
     price = data.get("price", "")
 
-    # Emoji + pretty names
+    # Optional TP/SL fields (present only for BUY/SELL alerts in your Pine script)
+    tp = data.get("tp", "")
+    sl = data.get("sl", "")
+
+    # Emoji mapping (your Pine script sends emojis inside event text)
     emoji = {
-        "CCI_EARLY_BUY": "🟢",
-        "CCI_EARLY_SELL": "🔴",
-        "TREND_UP": "📈",
-        "TREND_DOWN": "📉",
-        "TEST_1M": "🧪",
+        "🟢 BUY NOW 🟢": "🟢",
+        "🔴 SELL NOW 🔴": "🔴",
+        "📈 TREND UP 📈": "📈",
+        "📉 TREND DOWN 📉": "📉",
+        "🧪 TEST_1M": "🧪",
     }.get(event, "🔔")
 
+    # Prettier event text
     pretty_event = {
-        "CCI_EARLY_BUY": "BUY NOW",
-        "CCI_EARLY_SELL": "SELL NOW",
+        "🟢 BUY NOW 🟢": "BUY NOW",
+        "🔴 SELL NOW 🔴": "SELL NOW",
+        "📈 TREND UP 📈": "TREND UP",
+        "📉 TREND DOWN 📉": "TREND DOWN",
+        "🧪 TEST_1M": "TEST",
     }.get(event, event)
 
-    msg = (
-        f"{emoji} {pretty_event}\n"
-        f"{ticker} • {tf}\n"
-        f"Price: {price}"
-    )
+    # Build Telegram message
+    lines = [
+        f"{emoji} {pretty_event}",
+        f"{ticker} • {tf}",
+        f"Price: {price}",
+    ]
+
+    # Only show TP/SL if provided
+    if tp and sl:
+        lines.append(f"TP: {tp}")
+        lines.append(f"SL: {sl}")
+
+    msg = "\n".join(lines)
 
     send_to_group(msg)
     return {"status": "sent"}, 200
