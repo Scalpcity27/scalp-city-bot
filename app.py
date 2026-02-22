@@ -24,7 +24,6 @@ def send_to_group(text: str) -> None:
         timeout=20,
     )
 
-    # Helpful debug output in Render logs
     print("TELEGRAM STATUS:", r.status_code)
     print("TELEGRAM BODY:", r.text)
 
@@ -38,7 +37,6 @@ def health():
 
 @app.post("/tv")
 def tradingview_webhook():
-    # TradingView often sends JSON as text/plain
     raw = request.get_data(as_text=True) or ""
 
     try:
@@ -46,24 +44,21 @@ def tradingview_webhook():
     except json.JSONDecodeError:
         data = {}
 
-    # Secret check (inside JSON body)
+    # Secret check
     if TV_SECRET:
         incoming = data.get("secret", "")
         if incoming != TV_SECRET:
-            print("SECRET MISMATCH. Incoming:", incoming, "Expected:", TV_SECRET)
+            print("SECRET MISMATCH")
             abort(401)
 
-    # Fields from Pine payload
     event = data.get("event", "ALERT")
     ticker = data.get("ticker", "")
     tf = data.get("tf", "")
     price = data.get("price", "")
 
-    # Optional TP/SL fields (present only for BUY/SELL alerts in your Pine script)
     tp = data.get("tp", "")
     sl = data.get("sl", "")
 
-    # Emoji mapping (your Pine script sends emojis inside event text)
     emoji = {
         "🟢 BUY NOW 🟢": "🟢",
         "🔴 SELL NOW 🔴": "🔴",
@@ -72,7 +67,6 @@ def tradingview_webhook():
         "🧪 TEST_1M": "🧪",
     }.get(event, "🔔")
 
-    # Prettier event text
     pretty_event = {
         "🟢 BUY NOW 🟢": "BUY NOW",
         "🔴 SELL NOW 🔴": "SELL NOW",
@@ -81,18 +75,18 @@ def tradingview_webhook():
         "🧪 TEST_1M": "TEST",
     }.get(event, event)
 
-    # Build Telegram message
     lines = [
         f"{emoji} {pretty_event}",
         f"{ticker} • {tf}",
         f"Price: {price}",
     ]
 
-  if tp and sl:
-    lines.append(f"TP: {tp}")
-    lines.append(f"SL: {sl}")
-    lines.append("")
-    lines.append("⚠️ Please trade carefully when scalping ⚠️")
+    # Correct indentation (4 spaces)
+    if tp and sl:
+        lines.append(f"TP: {tp}")
+        lines.append(f"SL: {sl}")
+        lines.append("")
+        lines.append("⚠️ Please trade carefully when scalping ⚠️")
 
     msg = "\n".join(lines)
 
