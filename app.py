@@ -1,8 +1,8 @@
 import os
 import json
+import time
 import requests
 from flask import Flask, request, abort
-from collections import deque
 
 app = Flask(__name__)
 
@@ -12,8 +12,11 @@ GROUP_ID  = os.getenv("GROUP_ID", "")
 TV_SECRET = os.getenv("TV_SECRET", "")
 TELEGRAM_API = f"https://api.telegram.org/bot{BOT_TOKEN}"
 
-# ── Signal queue for MT5 EA to poll ──
-signal_queue = deque(maxlen=50)
+# ── Signal store: list of (timestamp, signal_dict) ──
+# Signals are kept for SIGNAL_TTL seconds so the EA can't miss them
+# even if a poll or two fails due to network issues.
+SIGNAL_TTL = 15  # seconds to keep each signal available
+signal_store = []  # [(timestamp_added, signal_dict), ...]
 
 def send_to_group(text: str) -> None:
     if not BOT_TOKEN or not GROUP_ID:
@@ -79,6 +82,7 @@ def tradingview_webhook():
     tp1     = data.get("tp1", "")
     tp2     = data.get("tp2", "")
     tp3     = data.get("tp3", "")
+    tp4     = data.get("tp4", "")   # NEW — 4th TP level for runner trade
     sl      = data.get("sl", "")
     partial = data.get("partial", "")
 
@@ -90,17 +94,18 @@ def tradingview_webhook():
         lines.append(tagline)
     lines.append(f"{ticker} • {tf}")
     lines.append(f"Price: {price}")
-    if tp1 or tp2 or tp3:
+    if tp1 or tp2 or tp3 or tp4:
         if tp1: lines.append(f"TP1: {tp1}")
         if tp2: lines.append(f"TP2: {tp2}")
         if tp3: lines.append(f"TP3: {tp3}")
+        if tp4: lines.append(f"TP4: {tp4}")
         if sl:  lines.append(f"SL: {sl}")
         lines.append("")
         lines.append("⚠️ Please trade carefully scalping ⚠️")
     msg = "\n".join(lines)
     send_to_group(msg)
 
-    # ── Queue signal for MT5 EA ──
+    # ── Queue signal for MT5 EA with a timestamp ──
     action = ACTION_MAP.get(event)
     if action:
         signal = {
@@ -111,18 +116,30 @@ def tradingview_webhook():
             "tp1":     float(tp1)     if tp1     else 0,
             "tp2":     float(tp2)     if tp2     else 0,
             "tp3":     float(tp3)     if tp3     else 0,
+            "tp4":     float(tp4)     if tp4     else 0,
             "sl":      float(sl)      if sl      else 0,
             "partial": float(partial) if partial else 0,
             "event":   event,
         }
-        signal_queue.append(signal)
-        print(f"QUEUED SIGNAL: {signal}")
+        signal_store.append((time.time(), signal))
+        print(f"QUEUED SIGNAL (TTL={SIGNAL_TTL}s): {signal}")
 
     return {"status": "sent"}, 200
 
+
 # ── MT5 EA polls this every 2 seconds ──
+# Signals are returned for SIGNAL_TTL seconds then expire.
+# The EA is responsible for deduplication (same action + price = same signal).
 @app.get("/poll")
 def poll():
-    signals = list(signal_queue)
-    signal_queue.clear()
+    now = time.time()
+
+    # Drop expired signals
+    active = [(ts, sig) for (ts, sig) in signal_store if now - ts < SIGNAL_TTL]
+
+    # Replace store in-place (keep list object the same)
+    signal_store.clear()
+    signal_store.extend(active)
+
+    signals = [sig for (_, sig) in active]
     return {"count": len(signals), "signals": signals}, 200
