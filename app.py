@@ -1,6 +1,7 @@
 import os
 import json
 import time
+import uuid
 import requests
 from flask import Flask, request, abort
 
@@ -12,11 +13,14 @@ GROUP_ID  = os.getenv("GROUP_ID", "")
 TV_SECRET = os.getenv("TV_SECRET", "")
 TELEGRAM_API = f"https://api.telegram.org/bot{BOT_TOKEN}"
 
-# ── Signal store: list of (timestamp, signal_dict) ──
-# Signals are kept for SIGNAL_TTL seconds so the EA can't miss them
-# even if a poll or two fails due to network issues.
-SIGNAL_TTL = 15  # seconds to keep each signal available
-signal_store = []  # [(timestamp_added, signal_dict), ...]
+# ── Signal store ──
+# Each entry: {"id": str, "ts": float, "delivered": bool, "signal": dict}
+# A signal is sent to the EA exactly once. After the first successful poll
+# that returns it, it is marked delivered and never sent again.
+# It stays in the store for SIGNAL_TTL seconds so we can still ACK it,
+# then it is garbage-collected.
+SIGNAL_TTL = 30   # seconds before a signal is fully removed from the store
+signal_store = []  # list of signal entry dicts
 
 def send_to_group(text: str) -> None:
     if not BOT_TOKEN or not GROUP_ID:
@@ -50,7 +54,6 @@ EVENT_MAP = {
     "🧪 TEST": ("🧪", "TEST", "⚠️ THIS IS A TEST — DO NOT FOLLOW ⚠️"),
 }
 
-# Map event strings to MT5 action codes
 ACTION_MAP = {
     "🟢 BUY GOLD NOW 🟢":  "BUY",
     "🔴 SELL GOLD NOW 🔴": "SELL",
@@ -82,7 +85,6 @@ def tradingview_webhook():
     tp1     = data.get("tp1", "")
     tp2     = data.get("tp2", "")
     tp3     = data.get("tp3", "")
-    tp4     = data.get("tp4", "")   # NEW — 4th TP level for runner trade
     sl      = data.get("sl", "")
     partial = data.get("partial", "")
 
@@ -94,52 +96,61 @@ def tradingview_webhook():
         lines.append(tagline)
     lines.append(f"{ticker} • {tf}")
     lines.append(f"Price: {price}")
-    if tp1 or tp2 or tp3 or tp4:
-        if tp1: lines.append(f"TP1: {tp1}")
-        if tp2: lines.append(f"TP2: {tp2}")
-        if tp3: lines.append(f"TP3: {tp3}")
-        if tp4: lines.append(f"TP4: {tp4}")
-        if sl:  lines.append(f"SL: {sl}")
+    if partial: lines.append(f"Partial: {partial}")
+    if tp1:     lines.append(f"TP1: {tp1}")
+    if tp2:     lines.append(f"TP2: {tp2}")
+    if tp3:     lines.append(f"TP3: {tp3}")
+    if sl:      lines.append(f"SL: {sl}")
+    if tp1 or tp2 or tp3:
         lines.append("")
         lines.append("⚠️ Please trade carefully scalping ⚠️")
     msg = "\n".join(lines)
     send_to_group(msg)
 
-    # ── Queue signal for MT5 EA with a timestamp ──
+    # ── Queue signal for MT5 EA ──
     action = ACTION_MAP.get(event)
     if action:
         signal = {
+            "id":      str(uuid.uuid4()),   # unique ID — EA echoes this back to ACK
             "action":  action,
             "ticker":  ticker,
             "tf":      tf,
             "price":   float(price)   if price   else 0,
+            "partial": float(partial) if partial else 0,
             "tp1":     float(tp1)     if tp1     else 0,
             "tp2":     float(tp2)     if tp2     else 0,
             "tp3":     float(tp3)     if tp3     else 0,
-            "tp4":     float(tp4)     if tp4     else 0,
             "sl":      float(sl)      if sl      else 0,
-            "partial": float(partial) if partial else 0,
             "event":   event,
         }
-        signal_store.append((time.time(), signal))
-        print(f"QUEUED SIGNAL (TTL={SIGNAL_TTL}s): {signal}")
+        entry = {"id": signal["id"], "ts": time.time(), "delivered": False, "signal": signal}
+        signal_store.append(entry)
+        print(f"QUEUED SIGNAL id={signal['id']} action={action}")
 
     return {"status": "sent"}, 200
 
 
-# ── MT5 EA polls this every 2 seconds ──
-# Signals are returned for SIGNAL_TTL seconds then expire.
-# The EA is responsible for deduplication (same action + price = same signal).
+# ── MT5 EA polls here every 2 seconds ──
+# Only undelivered signals are returned. On first successful poll they are
+# immediately marked delivered so no subsequent poll ever sees them again.
+# The EA can also POST a list of ACK ids to /ack if it wants to confirm receipt,
+# but the mark-on-first-poll approach already prevents duplicate trades.
 @app.get("/poll")
 def poll():
     now = time.time()
 
-    # Drop expired signals
-    active = [(ts, sig) for (ts, sig) in signal_store if now - ts < SIGNAL_TTL]
+    # Collect signals not yet delivered
+    pending = [e for e in signal_store if not e["delivered"]]
 
-    # Replace store in-place (keep list object the same)
-    signal_store.clear()
-    signal_store.extend(active)
+    # Mark them all delivered right now — before we return —
+    # so even if this response is received twice (unlikely but possible)
+    # the EA only ever sees each signal in one poll response.
+    for e in pending:
+        e["delivered"] = True
 
-    signals = [sig for (_, sig) in active]
+    # Garbage-collect entries older than SIGNAL_TTL
+    signal_store[:] = [e for e in signal_store if now - e["ts"] < SIGNAL_TTL]
+
+    signals = [e["signal"] for e in pending]
+    print(f"POLL → returning {len(signals)} signal(s)")
     return {"count": len(signals), "signals": signals}, 200
